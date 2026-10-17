@@ -3,6 +3,9 @@ package com.kevingong.printer.sample
 import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothDevice
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -55,6 +58,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -62,6 +66,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.kevingong.printer.hardware.BluetoothLePrinter
 import com.kevingong.printer.hardware.UsbPrinter
+import com.kevingong.printer.hardware.VirtualPrinter
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -113,6 +118,10 @@ fun PrinterSampleApp(model: PrinterViewModel = viewModel()) {
                 .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            if (model.transport != Transport.VIRTUAL) {
+                VirtualPrinterBanner(onTry = { model.transport = Transport.VIRTUAL })
+            }
+
             TabRow(selectedTabIndex = model.transport.ordinal) {
                 Transport.entries.forEach { t ->
                     Tab(selected = model.transport == t, onClick = { model.transport = t }, text = { Text(t.title) })
@@ -265,10 +274,35 @@ private fun NetworkSection(model: PrinterViewModel) {
     }
 }
 
+/** Always-visible entry to the virtual printer, so the sample can be tried without any hardware. */
+@Composable
+private fun VirtualPrinterBanner(onTry: () -> Unit) {
+    val context = LocalContext.current
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("没有打印机？", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "浏览器打开 printer.baici.tech，把页面上的 6 位 token 填进「虚拟」页签，小票就实时渲染在网页里。",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = onTry) { Text("用虚拟打印机") }
+                OutlinedButton(onClick = { openVirtualPrinterPage(context) }) { Text("打开网页") }
+            }
+        }
+    }
+}
+
+private fun openVirtualPrinterPage(context: Context, url: String = VirtualPrinter.DEFAULT_BASE_URL) {
+    runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+}
+
 @Composable
 private fun VirtualSection(model: PrinterViewModel) {
+    val context = LocalContext.current
     SectionCard("虚拟打印机（网页实时渲染）") {
-        Text("打开 ${model.virtualBaseUrl.ifBlank { "https://printer.baici.tech" }}，把页面显示的 6 位 token 填到这里。", style = MaterialTheme.typography.bodySmall)
+        Text("打开 ${model.virtualBaseUrl.ifBlank { VirtualPrinter.DEFAULT_BASE_URL }}，把页面显示的 6 位 token 填到这里。", style = MaterialTheme.typography.bodySmall)
+        OutlinedButton(onClick = { openVirtualPrinterPage(context, model.virtualBaseUrl.ifBlank { VirtualPrinter.DEFAULT_BASE_URL }) }) { Text("打开网页拿 token") }
         OutlinedTextField(
             value = model.token,
             onValueChange = { model.token = it.uppercase().filter { c -> c.isLetterOrDigit() }.take(6) },

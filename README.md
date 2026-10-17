@@ -35,6 +35,21 @@ val receipt = receipt(PrinterProfile.paper58(Encodings.GB_18030_2000)) {
 printer.write(receipt) { error -> /* null on success, else a PError */ }
 ```
 
+## No printer at hand? Try the virtual printer
+
+Open <https://printer.baici.tech> in any browser. The page shows a 6-character token;
+send receipts to it and watch them render live, with the hex dump next to the image.
+
+```kotlin
+val printer = VirtualPrinter("K7Q2MZ")   // the token on the page
+printer.write(receipt) { error -> … }
+```
+
+The [sample app](sample) shows a **没有打印机？** card on top of its first screen that
+jumps to the virtual printer, and the same token works from the
+[Swift library](https://github.com/KevinGong2013/Printer) and from `curl`.
+Details in [Virtual printer (no hardware)](#virtual-printer-no-hardware).
+
 ## Requirements
 
 - Library: Android 5.0+ (API 21), no dependencies besides the Kotlin stdlib.
