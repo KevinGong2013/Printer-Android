@@ -5,11 +5,11 @@ plugins {
 
 android {
     namespace = "com.kevingong.printer.sample"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.kevingong.printer.sample"
-        minSdk = 21
+        minSdk = 23
         targetSdk = 34
         versionCode = 1
         versionName = "1.0.0"
