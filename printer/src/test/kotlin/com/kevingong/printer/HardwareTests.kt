@@ -1,5 +1,7 @@
 package com.kevingong.printer
 
+import android.bluetooth.BluetoothDevice
+import com.kevingong.printer.hardware.BluetoothClassicScanner
 import com.kevingong.printer.hardware.DummyPrinter
 import com.kevingong.printer.hardware.NetworkPrinter
 import com.kevingong.printer.hardware.PError
@@ -7,6 +9,7 @@ import com.kevingong.printer.hardware.VirtualPrinter
 import com.kevingong.printer.hardware.chunked
 import com.sun.net.httpserver.HttpServer
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -31,6 +34,16 @@ class DummyPrinterTests {
         assertEquals(1, seen.size)
         assertBytes(printer.history[0], seen[0])
         assertNull(result)
+    }
+}
+
+class ClassicScannerTests {
+    @Test
+    fun leOnlyDevicesCannotDoSpp() {
+        assertTrue(BluetoothClassicScanner.supportsRfcomm(BluetoothDevice.DEVICE_TYPE_CLASSIC))
+        assertTrue(BluetoothClassicScanner.supportsRfcomm(BluetoothDevice.DEVICE_TYPE_DUAL))
+        assertTrue(BluetoothClassicScanner.supportsRfcomm(BluetoothDevice.DEVICE_TYPE_UNKNOWN))
+        assertFalse(BluetoothClassicScanner.supportsRfcomm(BluetoothDevice.DEVICE_TYPE_LE))
     }
 }
 

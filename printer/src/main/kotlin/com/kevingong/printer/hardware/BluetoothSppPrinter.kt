@@ -35,6 +35,9 @@ import java.util.concurrent.TimeUnit
 class BluetoothSppPrinter(val device: BluetoothDevice) : Printer {
     var connectTimeoutMillis: Long = 10_000
 
+    /** Upper bound for a first connection that has to pair (the PIN dialog waits for the user). */
+    var pairingTimeoutMillis: Long = 60_000
+
     /** Leave the socket open between writes (faster; the printer shows "connected"). */
     var keepConnection: Boolean = true
 
@@ -112,20 +115,20 @@ class BluetoothSppPrinter(val device: BluetoothDevice) : Printer {
                 lastError = e
                 continue
             }
-            val guard = watchdog.schedule({ if (!s.isConnected) runCatching { s.close() } }, connectTimeoutMillis, TimeUnit.MILLISECONDS)
+            val guard = scheduleConnectGuard(s)
             try {
                 s.connect()
-                guard.cancel(false)
+                guard.cancel()
                 socket = s
                 diag("connected (attempt ${index + 1})")
                 return null
             } catch (e: IOException) {
-                guard.cancel(false)
+                guard.cancel()
                 runCatching { s.close() }
                 lastError = e
                 diag("attempt ${index + 1} failed: ${e.message}")
             } catch (e: SecurityException) {
-                guard.cancel(false)
+                guard.cancel()
                 runCatching { s.close() }
                 return PError.DeviceNotReady
             }
@@ -133,6 +136,37 @@ class BluetoothSppPrinter(val device: BluetoothDevice) : Printer {
         diag("connect failed: ${lastError?.message}")
         return PError.ConnectFailed
     }
+
+    /**
+     * Closes the socket when `connect()` has not returned within [connectTimeoutMillis].
+     * An unpaired printer makes the stack pair first, which shows a PIN dialog the user
+     * has to answer; while the bond is in progress the guard keeps waiting (up to
+     * [pairingTimeoutMillis]) instead of killing the socket under the dialog.
+     */
+    private inner class ConnectGuard(private val s: BluetoothSocket) : Runnable {
+        @Volatile
+        private var cancelled = false
+        private val started = System.currentTimeMillis()
+
+        fun cancel() {
+            cancelled = true
+        }
+
+        override fun run() {
+            if (cancelled || s.isConnected) return
+            val elapsed = System.currentTimeMillis() - started
+            val bonding = runCatching { device.bondState == BluetoothDevice.BOND_BONDING }.getOrDefault(false)
+            if (bonding && elapsed < pairingTimeoutMillis) {
+                if (elapsed < connectTimeoutMillis + 1_000) diag("pairing in progress, waiting for the user")
+                watchdog.schedule(this, 1_000, TimeUnit.MILLISECONDS)
+            } else {
+                runCatching { s.close() }
+            }
+        }
+    }
+
+    private fun scheduleConnectGuard(s: BluetoothSocket): ConnectGuard =
+        ConnectGuard(s).also { watchdog.schedule(it, connectTimeoutMillis, TimeUnit.MILLISECONDS) }
 
     private fun closeSocket() {
         socket?.let { s ->
@@ -173,6 +207,10 @@ class BluetoothSppPrinter(val device: BluetoothDevice) : Printer {
  * Discovers classic Bluetooth devices (`BluetoothAdapter.startDiscovery`), the SPP
  * counterpart of BLE scanning. Discovery takes ~12 s and finds unpaired printers too;
  * pairing happens when the socket is first opened.
+ *
+ * Android reports every radio it hears during discovery, including BLE-only beacons,
+ * earbuds and phones that can never open an RFCOMM socket (easily a hundred of them in an
+ * office). Those are dropped unless [includeLeOnlyDevices] is set.
  */
 @SuppressLint("MissingPermission")
 class BluetoothClassicScanner(context: Context) {
@@ -182,6 +220,9 @@ class BluetoothClassicScanner(context: Context) {
 
     var onDeviceFound: ((BluetoothDevice) -> Unit)? = null
     var onFinished: (() -> Unit)? = null
+
+    /** Also report devices whose type is `DEVICE_TYPE_LE` (they cannot do SPP). */
+    var includeLeOnlyDevices: Boolean = false
 
     val isDiscovering: Boolean get() = adapter?.isDiscovering == true
 
@@ -195,7 +236,9 @@ class BluetoothClassicScanner(context: Context) {
                         BluetoothDevice.ACTION_FOUND -> {
                             @Suppress("DEPRECATION")
                             val device: BluetoothDevice? = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
-                            device?.let { d -> onDeviceFound?.invoke(d) }
+                            if (device != null && (includeLeOnlyDevices || supportsRfcomm(runCatching { device.type }.getOrDefault(BluetoothDevice.DEVICE_TYPE_UNKNOWN)))) {
+                                onDeviceFound?.invoke(device)
+                            }
                         }
 
                         BluetoothAdapter.ACTION_DISCOVERY_FINISHED -> onFinished?.invoke()
@@ -225,5 +268,14 @@ class BluetoothClassicScanner(context: Context) {
         runCatching { adapter?.cancelDiscovery() }
         receiver?.let { runCatching { appContext.unregisterReceiver(it) } }
         receiver = null
+    }
+
+    companion object {
+        /**
+         * `true` for a `BluetoothDevice.type` that can carry RFCOMM: classic, dual-mode, or
+         * unknown (not yet resolved by the stack). BLE-only devices are excluded.
+         */
+        @JvmStatic
+        fun supportsRfcomm(deviceType: Int): Boolean = deviceType != BluetoothDevice.DEVICE_TYPE_LE
     }
 }

@@ -55,12 +55,12 @@ dependencyResolutionManagement {
 
 // build.gradle.kts
 dependencies {
-    implementation("com.github.KevinGong2013:Printer-Android:1.0.0")
+    implementation("com.github.KevinGong2013:Printer-Android:1.0.1")
 }
 ```
 
 If your build resolves modules individually, the artifact is also available as
-`com.github.KevinGong2013.Printer-Android:printer:1.0.0`.
+`com.github.KevinGong2013.Printer-Android:printer:1.0.1`.
 
 The library manifest declares `INTERNET`, `BLUETOOTH` / `BLUETOOTH_ADMIN` (≤ API 30),
 `BLUETOOTH_CONNECT` and `BLUETOOTH_SCAN` (`neverForLocation`). Request the runtime
@@ -198,6 +198,21 @@ several times faster with `writeChunkSize = 0`, so try that once the basics work
 `writeType = WITH_RESPONSE` helps modules that drop unacknowledged packets;
 `interChunkDelayMillis` removes white lines in images on slow printers.
 
+Right after connecting the library asks for `CONNECTION_PRIORITY_BALANCED`
+(`connectionPriority`, set to `-1` to leave the link alone) and retries service discovery
+when the stack answers with an empty list, which happens when the app's discovery overlaps
+the one the Android stack starts on its own.
+
+> **Dual-mode printers (GP-58 and friends) on Android: use SPP.** During its own service
+> discovery the Android stack forces the connection interval down to 7.5 ms. The BLE module
+> in the Gprinter GP-58 cannot keep up, stops answering and the link dies with a
+> supervision timeout about three seconds after connecting; afterwards the printer's
+> Bluetooth LED stays lit and it has to be power-cycled (seen on Android 12, 7 of 8
+> attempts, confirmed with an HCI trace). This happens before the app gets a say, so no
+> library setting avoids it; iOS never goes below 15 ms and is unaffected. Such printers are
+> dual-mode (`Device.isDualMode`) and print perfectly over [SPP](#classic-bluetooth-spp),
+> which is also what the vendor's own Android SDK uses. BLE-only modules are not affected.
+
 Scanning filters on the GATT services used by common BLE printer modules and the write
 characteristic is picked by priority:
 
@@ -221,8 +236,13 @@ val spp = BluetoothSppPrinter(device)                 // RFCOMM, UUID 00001101-0
 spp.write(receipt) { error -> … }                    // connects on first use, keeps the socket open
 ```
 
-`BluetoothClassicScanner` wraps `startDiscovery()` to find unpaired printers. Pairing
-happens when the socket is first opened. This is the transport iOS cannot use.
+`BluetoothClassicScanner` wraps `startDiscovery()` to find unpaired printers; BLE-only
+devices (beacons, earbuds, phones) are filtered out because they cannot open an RFCOMM
+socket (`includeLeOnlyDevices = true` keeps them). Pairing happens when the socket is first
+opened: the system shows the PIN dialog (`0000` on Gprinter) and the connection guard
+waits up to `pairingTimeoutMillis` while the bond is in progress. Calling
+`device.createBond()` beforehand makes the dialog appear at a moment of your choosing.
+This is the transport iOS cannot use.
 
 ### USB
 
@@ -307,6 +327,11 @@ one by one; their expected bytes are the shared golden vectors.
 - **White horizontal lines in images** – the printer is fed faster than it prints. Set
   `interChunkDelayMillis = 10`.
 - **Garbage instead of accented letters** – profile charset and `codePage` do not match.
+- **Last character of a `kv` value wraps to the next line** – a symbol such as `¥` (U+00A5)
+  is drawn two cells wide by GBK / GB18030 printers. `printableWidth(profile)` accounts for
+  that; make sure the profile carries the printer's real encoding.
+- **BLE connection drops ~3 s after connecting, printer LED stays on** – dual-mode printer
+  on Android, see [Bluetooth LE](#bluetooth-le). Power-cycle the printer and use SPP.
 - **Cut command does nothing** – the printer has no cutter.
 
 ## License

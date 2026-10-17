@@ -80,6 +80,7 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
     fun log(message: String) {
         val time = SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date())
         logs.add(0, "$time  $message")
+        android.util.Log.i("PrinterSample", message)
         if (logs.size > 300) logs.removeAt(logs.lastIndex)
     }
 

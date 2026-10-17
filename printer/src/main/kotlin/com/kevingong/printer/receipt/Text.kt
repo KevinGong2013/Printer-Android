@@ -7,24 +7,78 @@ import com.kevingong.printer.ReceiptItem
 /**
  * Encodes the string for the printer. Characters that cannot be represented in
  * `profile.encoding` are replaced (usually with `?`) instead of dropping the line.
+ *
+ * On GB2312 / GBK / GB18030 profiles the yen/yuan sign `¥` (U+00A5) is sent as the
+ * full-width `￥` (U+FFE5, `A3 A4`): the Java encoder would otherwise emit the 4-byte
+ * GB18030 sequence `81 30 84 36`, which GBK-only printers such as the Gprinter GP-58
+ * render as an unrelated ideograph.
  */
-fun String.printableBytes(profile: PrinterProfile): ByteArray = toByteArray(profile.encoding)
+fun String.printableBytes(profile: PrinterProfile): ByteArray =
+    normalizedFor(profile.encoding).toByteArray(profile.encoding)
+
+/** Characters that have a native two-byte form on GB-family printers. */
+private val gbSubstitutions = mapOf('\u00A5' to '\uFFE5')
+
+internal fun String.normalizedFor(charset: java.nio.charset.Charset): String {
+    if (!isGbFamily(charset)) return this
+    var result: StringBuilder? = null
+    for ((index, ch) in withIndex()) {
+        val replacement = gbSubstitutions[ch]
+        if (replacement != null && result == null) result = StringBuilder(this).also { it.setLength(index) }
+        if (result != null) result.append(replacement ?: ch)
+    }
+    return result?.toString() ?: this
+}
+
+internal fun isGbFamily(charset: java.nio.charset.Charset): Boolean {
+    val name = charset.name().uppercase()
+    return name.startsWith("GB") || name == "X-MSWIN-936" || name == "MS936" || name == "EUC-CN"
+}
 
 /**
  * Number of character cells the string occupies on a fixed-pitch printer
- * (full-width CJK characters count as two).
+ * (full-width CJK characters count as two). Encoding-agnostic; prefer
+ * [printableWidth] with a profile when laying out a line.
  */
 val String.printableWidth: Int
-    get() {
-        var width = 0
-        var i = 0
-        while (i < length) {
-            val codePoint = codePointAt(i)
-            width += if (isFullWidth(codePoint)) 2 else 1
-            i += Character.charCount(codePoint)
+    get() = printableWidth(null)
+
+/**
+ * Number of character cells the string occupies when printed with [profile]'s encoding.
+ *
+ * On printers driven by a legacy multi-byte code page (GBK / GB18030, Big5, Shift_JIS,
+ * EUC-KR …) every character that encodes to more than one byte is drawn in a
+ * double-width cell, not only the CJK ideographs: `¥` (U+00A5) becomes a 4-byte GB18030
+ * sequence and prints two cells wide on a Gprinter GP-58, which pushed the last digit of a
+ * right-aligned price onto the next line when it was counted as one cell.
+ */
+fun String.printableWidth(profile: PrinterProfile): Int =
+    normalizedFor(profile.encoding).printableWidth(profile.encoding)
+
+internal fun String.printableWidth(charset: java.nio.charset.Charset?): Int {
+    val multiByteCodePage = charset != null && isLegacyMultiByte(charset)
+    var width = 0
+    var i = 0
+    while (i < length) {
+        val codePoint = codePointAt(i)
+        val count = Character.charCount(codePoint)
+        width += when {
+            codePoint < 0x80 -> 1
+            isFullWidth(codePoint) -> 2
+            multiByteCodePage && substring(i, i + count).toByteArray(charset!!).size > 1 -> 2
+            else -> 1
         }
-        return width
+        i += count
     }
+    return width
+}
+
+/** `true` for DBCS-style code pages where "more than one byte" means "two cells". */
+internal fun isLegacyMultiByte(charset: java.nio.charset.Charset): Boolean {
+    val name = charset.name().uppercase()
+    if (name.startsWith("UTF") || name.startsWith("X-UTF")) return false
+    return charset.newEncoder().maxBytesPerChar() > 1f
+}
 
 internal fun isFullWidth(codePoint: Int): Boolean = when (codePoint) {
     in 0x1100..0x115F, in 0x2E80..0x303E, in 0x3041..0x33FF, in 0x3400..0x4DBF,
@@ -55,7 +109,7 @@ class Text(val string: String) : ReceiptItem {
 /** `key` left aligned and `value` right aligned on one line. */
 class KVItem(val k: String, val v: String) : ReceiptItem {
     override fun assemblePrintableData(profile: PrinterProfile): ByteArray {
-        val spaces = maxOf(1, profile.charactersPerLine - k.printableWidth - v.printableWidth)
+        val spaces = maxOf(1, profile.charactersPerLine - k.printableWidth(profile) - v.printableWidth(profile))
         return Line(k + " ".repeat(spaces) + v).assemblePrintableData(profile)
     }
 

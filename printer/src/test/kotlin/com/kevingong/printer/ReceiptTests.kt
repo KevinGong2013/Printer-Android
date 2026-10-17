@@ -56,6 +56,36 @@ class ReceiptTests {
     }
 
     @Test
+    fun yenSignIsSentAsFullWidthOnGbPrinters() {
+        val gb = PrinterProfile.paper58(Encodings.GB_18030_2000)
+        assertBytes(b(0xA3, 0xA4, 0x31, 0x32, 10), Line("¥12").assemblePrintableData(gb))
+        assertBytes(b(0xA3, 0xA4, 0x31, 10), Line("￥1").assemblePrintableData(gb))
+        // Not a GB printer: the encoder decides as before.
+        val utf8 = PrinterProfile.paper58(Charsets.UTF_8)
+        assertBytes(b(0xC2, 0xA5, 0x31, 10), Line("¥1").assemblePrintableData(utf8))
+        val cp437 = PrinterProfile.paper58(java.nio.charset.Charset.forName("IBM437"))
+        assertBytes(b(0x9D, 0x31, 10), Line("¥1").assemblePrintableData(cp437))
+    }
+
+    @Test
+    fun kvItemCountsMultiByteSymbolsAsDoubleWidthOnGbPrinters() {
+        // "¥" (U+00A5) is a 4-byte GB18030 sequence that a GBK printer draws two cells wide.
+        val gb = PrinterProfile.paper58(Encodings.GB_18030_2000)
+        assertEquals(2, "¥".printableWidth(gb))
+        assertEquals(22, "芝士蛋糕 Cheesecake x1".printableWidth(gb))
+        val bytes = KVItem("芝士蛋糕 Cheesecake x1", "¥18.50").assemblePrintableData(gb)
+        val line = bytes.copyOf(bytes.size - 1).toString(Encodings.GB_18030_2000)
+        assertEquals(32, line.printableWidth(gb))
+        assertTrue(line.contains("x1   ￥18.50")) // 32 - 22 - 7 = 3 spaces
+
+        // Single-byte code pages keep one cell per character.
+        val cp437 = PrinterProfile.paper58(java.nio.charset.Charset.forName("IBM437"))
+        assertEquals(1, "¥".printableWidth(cp437))
+        val ascii = KVItem("Total", "¥12.00").assemblePrintableData(cp437)
+        assertEquals(cp437.charactersPerLine + 1, ascii.size)
+    }
+
+    @Test
     fun dividingIsFullWidth() {
         val bytes = Dividing.default().assemblePrintableData(profile)
         assertEquals(profile.charactersPerLine + 1, bytes.size)

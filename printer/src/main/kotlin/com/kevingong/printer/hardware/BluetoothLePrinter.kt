@@ -65,6 +65,14 @@ class BluetoothLePrinter(context: Context) : Printer {
     /** A printer seen while scanning. */
     data class Device(val name: String?, val address: String, val rssi: Int, val device: BluetoothDevice) {
         val displayName: String get() = name?.takeIf { it.isNotBlank() } ?: address
+
+        /**
+         * `true` when the stack knows the printer as a dual-mode (BR/EDR + LE) device. Such
+         * printers also speak SPP, and on Android that is the path to prefer: see
+         * [BluetoothSppPrinter] and the README's GP-58 notes.
+         */
+        val isDualMode: Boolean
+            get() = runCatching { device.type == BluetoothDevice.DEVICE_TYPE_DUAL }.getOrDefault(false)
     }
 
     /** Maximum bytes per BLE write; `0` uses the negotiated MTU. Keep 20 unless the printer is known to cope. */
@@ -78,6 +86,18 @@ class BluetoothLePrinter(context: Context) : Printer {
 
     /** MTU requested after connecting (`0` skips the request). The stack negotiates down as needed. */
     var requestMtu: Int = 512
+
+    /**
+     * `BluetoothGatt.CONNECTION_PRIORITY_*` requested right after connecting, or `-1` to leave
+     * the interval to the stack.
+     *
+     * Defaults to `CONNECTION_PRIORITY_BALANCED` (30–50 ms), the kind of link cheap printer
+     * modules are comfortable with once printing starts. It is applied after the stack's own
+     * service discovery, so it does **not** prevent the 7.5 ms interval Android forces during
+     * that discovery, which kills the BLE side of dual-mode printers such as the Gprinter
+     * GP-58 (see the README: use SPP for those on Android).
+     */
+    var connectionPriority: Int = BluetoothGatt.CONNECTION_PRIORITY_BALANCED
 
     var connectTimeoutMillis: Long = 15_000
 
@@ -122,6 +142,7 @@ class BluetoothLePrinter(context: Context) : Printer {
     private var gatt: BluetoothGatt? = null
     private var scanCallback: ScanCallback? = null
     private var discovering = false
+    private var discoveryAttempts = 0
     private var inFlight = false
     private var rejectedWrites = 0
     private val pending = ArrayDeque<WriteJob>()
@@ -338,6 +359,10 @@ class BluetoothLePrinter(context: Context) : Printer {
                             report(PError.ConnectFailed)
                             return@post
                         }
+                        if (connectionPriority >= 0 && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                            val ok = runCatching { g.requestConnectionPriority(connectionPriority) }.getOrDefault(false)
+                            diag("connected, requestConnectionPriority($connectionPriority) → $ok")
+                        }
                         diag("connected, requesting MTU $requestMtu")
                         if (requestMtu > 0 && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP && g.requestMtu(requestMtu)) {
                             val fallback = Runnable {
@@ -383,6 +408,14 @@ class BluetoothLePrinter(context: Context) : Printer {
                     report(PError.ConnectFailed)
                     return@post
                 }
+                if (g.services.isNullOrEmpty() && discoveryAttempts < MAX_DISCOVERY_ATTEMPTS) {
+                    // The stack runs its own discovery right after connecting; a discoverServices()
+                    // that overlaps it completes "successfully" with an empty list. Ask again.
+                    diag("service list empty (attempt $discoveryAttempts), retrying in $DISCOVERY_RETRY_MILLIS ms")
+                    discovering = false
+                    handler.postDelayed({ if (g === gatt && state == State.CONNECTING) discoverServices(g) }, DISCOVERY_RETRY_MILLIS)
+                    return@post
+                }
                 selectCharacteristic(g)
             }
         }
@@ -408,6 +441,7 @@ class BluetoothLePrinter(context: Context) : Printer {
     private fun discoverServices(g: BluetoothGatt) {
         if (discovering) return
         discovering = true
+        discoveryAttempts++
         if (!g.discoverServices()) {
             diag("discoverServices() refused")
             closeGatt()
@@ -468,6 +502,7 @@ class BluetoothLePrinter(context: Context) : Printer {
         writable = null
         candidates = emptyList()
         discovering = false
+        discoveryAttempts = 0
         inFlight = false
         rejectedWrites = 0
         mtu = 23
@@ -603,6 +638,9 @@ class BluetoothLePrinter(context: Context) : Printer {
     class GattException(val status: Int) : IOException("GATT status $status")
 
     companion object {
+        private const val MAX_DISCOVERY_ATTEMPTS = 6
+        private const val DISCOVERY_RETRY_MILLIS = 400L
+
         /** Expands a 16-bit Bluetooth SIG UUID like `"FFE1"` to its 128-bit form. */
         @JvmStatic
         fun uuid16(short: String): UUID = UUID.fromString("0000$short-0000-1000-8000-00805F9B34FB")

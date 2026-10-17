@@ -216,6 +216,9 @@ private fun SppSection(model: PrinterViewModel, withPermission: (() -> Unit) -> 
             OutlinedButton(onClick = { withPermission { model.toggleSppScan() } }) {
                 Text(if (model.sppScanning) "停止搜索" else "搜索附近")
             }
+            model.sppSelected?.takeIf { it.bondState != BluetoothDevice.BOND_BONDED }?.let { device ->
+                TextButton(onClick = { withPermission { model.log("SPP  createBond → " + runCatching { device.createBond() }.getOrDefault(false)) } }) { Text("配对") }
+            }
             if (model.sppScanning) CircularProgressIndicator(Modifier.width(20.dp).height(20.dp), strokeWidth = 2.dp)
         }
         if (model.sppDevices.isEmpty()) {
